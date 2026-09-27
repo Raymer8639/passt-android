@@ -1,0 +1,3 @@
+# Android portability patch for upstream df90211
+# The complete Android-specific source is vendored under src/.
+# Apply generated changes from the source snapshot when updating upstream.
