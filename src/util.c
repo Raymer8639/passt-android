@@ -389,8 +389,14 @@ bool ns_is_init(void)
 	bool ret = true;
 	int fd;
 
-	if ((fd = open("/proc/self/uid_map", O_RDONLY | O_CLOEXEC)) < 0)
+	if ((fd = open("/proc/self/uid_map", O_RDONLY | O_CLOEXEC)) < 0) {
+#ifdef __ANDROID__
+		/* Termux may hide uid_map; treat the app namespace as init. */
+		return true;
+#else
 		die_perror("Can't determine if we're in init namespace");
+#endif
+	}
 
 	if (read(fd, buf, sizeof(root_uid_map)) != sizeof(root_uid_map) - 1 ||
 	    strncmp(buf, root_uid_map, sizeof(root_uid_map)))
