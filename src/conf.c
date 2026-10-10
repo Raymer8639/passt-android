@@ -1329,6 +1329,7 @@ void conf(struct ctx *c, int argc, char **argv)
 	unsigned long max_mtu = IP_MAX_MTU;
 	struct fqdn *dnss = c->dns_search;
 	unsigned int ifi4 = 0, ifi6 = 0;
+	bool fd_local_mode;
 	bool opt_a_is_prefix = false;
 	const char *logfile = NULL;
 	char *runas = NULL;
@@ -1851,9 +1852,19 @@ void conf(struct ctx *c, int argc, char **argv)
 
 	log_conf_parsed = true;		/* Stop printing everything */
 
-	nl_sock_init(c, false);
-	if (!v6_only && !c->splice_only)
+	/* Android may deny route netlink to an unprivileged app. A passt
+	 * --fd endpoint does not need host interface discovery: all guest-side
+	 * IPv4 values are supplied explicitly by the caller. */
+	fd_local_mode = c->mode == MODE_PASST && c->fd_tap >= 0 &&
+			!v6_only && !c->splice_only;
+	if (!fd_local_mode)
+		nl_sock_init(c, false);
+	if (fd_local_mode) {
+		conf_ip4_local(&c->ip4);
+		c->ifi4 = -1;
+	} else if (!v6_only && !c->splice_only) {
 		c->ifi4 = conf_ip4(ifi4, &c->ip4);
+	}
 	if (!v4_only && !c->splice_only)
 		c->ifi6 = conf_ip6(ifi6, &c->ip6);
 
@@ -1934,7 +1945,8 @@ void conf(struct ctx *c, int argc, char **argv)
 
 	conf_open_files(c);	/* Before any possible setuid() / setgid() */
 
-	isolate_user(c, uid, gid, !netns_only, userns);
+	if (!fd_prepatched(c))
+		isolate_user(c, uid, gid, !netns_only, userns);
 
 	if (c->no_icmp)
 		c->no_ndp = 1;

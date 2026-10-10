@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <net/ethernet.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <fcntl.h>
 #include <string.h>
@@ -1118,6 +1119,31 @@ long clamped_scale(long x, long y, long lo, long hi, long f)
 }
 
 /**
+ * fd_prepatched() - Is the interface descriptor an inherited socket?
+ * @c:		Execution context
+ *
+ * A parent that set up our interface for us (a VMM, an UML harness, a
+ * sandboxed app) hands it over as one end of a socketpair.  Such a
+ * descriptor has no filesystem path and needs no host interface, which is
+ * the only configuration in which passt can run with no capability and no
+ * namespace of its own.
+ *
+ * Return: true if the descriptor is an unnamed socket, false otherwise
+ */
+bool fd_prepatched(const struct ctx *c)
+{
+	struct stat st;
+
+	if (c->fd_tap < 0)
+		return false;
+
+	if (fstat(c->fd_tap, &st))
+		return false;
+
+	return S_ISSOCK(st.st_mode);
+}
+
+/**
  * make_ugid_map() - Create userns UID & GID mappings
  * @pid:	PID of process owning the userns, or 0 for self
  * @uid:	Parent UID to map to 0 within userns
@@ -1151,7 +1177,14 @@ void make_ugid_map(pid_t pid, uid_t uid, gid_t gid)
 		die_perror("Can't build gidmap");
 
 	if (write_file(uidmap_path, uidmap) ||
-	    write_file(setgroups_path, "deny") ||
 	    write_file(gidmap_path, gidmap))
 		die("Couldn't configure user mappings");
+
+	/* Writing "deny" to setgroups is only required for the gid map to be
+	 * writable by an unprivileged process, and only Linux 3.19 and later
+	 * have the file at all.  Failure is harmless either way, so it is not
+	 * fatal: glibc builds on some sandboxes, Android in particular, cannot
+	 * reach the file, and nothing here needs the flush it would trigger.
+	 */
+	(void)write_file(setgroups_path, "deny");
 }
