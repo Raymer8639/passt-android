@@ -78,6 +78,7 @@
 #include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -384,6 +385,18 @@ void isolate_user(const struct ctx *c, uid_t uid, gid_t gid, bool use_userns,
 {
 	uint64_t ns_caps = 0;
 
+	/* A prepatched AF_UNIX endpoint is only ever handed to us by a parent
+	 * that already owns the isolation: there is no host interface to
+	 * discover, no routing to set up, and no capability we could use.
+	 * Android in particular denies both setgroups(2) and user namespace
+	 * creation outright, so the whole user/namespace dance is both
+	 * unnecessary and impossible there.
+	 */
+	if (fd_prepatched(c)) {
+		debug("Prepatched socket endpoint: skipping user namespace setup");
+		return;
+	}
+
 	/* First set our UID & GID in the original namespace */
 	if (setgroups(0, NULL)) {
 		/* If we don't have CAP_SETGID, this will EPERM */
@@ -479,6 +492,17 @@ int isolate_prefork(const struct ctx *c)
 	int flags = CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWUTS;
 	uint64_t ns_caps = 0;
 
+	/* An inherited socket endpoint means the caller owns the interface and
+	 * our lifetime, and the host may not let us create namespaces at all
+	 * (Android denies CLONE_NEWNS to app processes).  Our own mount and
+	 * IPC namespaces buy nothing here: the descriptor is already open and
+	 * we never touch the filesystem again after startup.
+	 */
+	if (fd_prepatched(c)) {
+		debug("Prepatched socket endpoint: skipping namespace isolation");
+		goto caps;
+	}
+
 	/* If we run in foreground, we have no chance to actually move to a new
 	 * PID namespace. For passt, use CLONE_NEWPID anyway, in case somebody
 	 * ever gets around seccomp profiles -- there's no harm in passing it.
@@ -528,6 +552,7 @@ int isolate_prefork(const struct ctx *c)
 	/* Now that initialization is more-or-less complete, we can
 	 * drop further capabilities
 	 */
+caps:
 	if (c->mode == MODE_PASTA) {
 		/* Keep CAP_SYS_ADMIN, so we can enter the netns */
 		ns_caps |= BIT(CAP_SYS_ADMIN);

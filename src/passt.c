@@ -421,7 +421,8 @@ int main(int argc, char **argv)
 	pcap_init(c);
 
 	fwd_neigh_table_init(c);
-	nl_neigh_notify_init(c);
+	if (!(c->mode == MODE_PASST && c->fd_tap >= 0))
+		nl_neigh_notify_init(c);
 
 	if (isolate_prefork(c))
 		die("Failed to sandbox process, exiting");
