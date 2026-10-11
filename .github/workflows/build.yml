@@ -1,0 +1,90 @@
+name: build
+
+# The only thing this repository has to do is produce a passt that runs on
+# Android.  So the check is exactly that: cross-compile it for aarch64 with the
+# NDK and confirm the result is a static Android binary, then make sure the
+# upstream (non-Android) build still compiles, since the Android changes are
+# supposed to be additive.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  android:
+    name: build (android arm64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NDK
+        run: |
+          set -eux
+          NDK_VERSION=r29
+          NDK_DIR="$RUNNER_TEMP/android-ndk"
+          curl -fsSL -o "$RUNNER_TEMP/ndk.zip" \
+            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/android-ndk-${NDK_VERSION}" "$NDK_DIR"
+          echo "NDK=$NDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Cross-compile for Android
+        run: |
+          set -eux
+          TOOL="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          CC="$TOOL/clang --target=aarch64-linux-android30"
+          make -C src passt CC="$CC" TARGET=aarch64-linux-android30 LDFLAGS=-static
+
+      - name: Verify the artifact is a static Android binary
+        run: |
+          set -eux
+          file src/passt
+          file src/passt | grep -q 'ARM aarch64'
+          file src/passt | grep -q 'statically linked'
+          file src/passt | grep -q 'Android 30'
+          # No dynamic loader and no shared library dependencies.
+          if readelf -l src/passt | grep -q 'INTERP'; then
+            echo "binary has an interpreter (not static)" >&2
+            exit 1
+          fi
+          readelf -d src/passt 2>/dev/null | grep -q 'NEEDED' && {
+            echo "binary needs shared libraries" >&2; exit 1; } || true
+          ls -l src/passt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: passt-android-arm64
+          path: src/passt
+          if-no-files-found: error
+
+  upstream-build:
+    name: build (upstream, unpatched path)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build for the host
+        run: |
+          set -eux
+          make -C src passt CC=gcc TARGET=x86_64-linux-gnu LDFLAGS=
+
+      - name: The host binary must still start
+        run: |
+          set -eux
+          ./src/passt --version
+
+      - name: The Android behaviour must not leak into the upstream path
+        run: |
+          set -eux
+          # A --fd that is not a socket, or no --fd at all, has to take the
+          # normal isolation route.  Without permission to make a user
+          # namespace that route fails loudly rather than silently skipping
+          # isolation, which is what we want to see here.
+          if ./src/passt -f -t none -u none >/tmp/host.log 2>&1; then
+            echo "unexpected success with no --fd" >&2
+            cat /tmp/host.log >&2
+            exit 1
+          fi
+          cat /tmp/host.log

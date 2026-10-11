@@ -1,0 +1,4 @@
+# Build output: CI produces this, and a checked-in binary goes stale silently.
+passt
+src/passt
+*.o
