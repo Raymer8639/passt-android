@@ -43,14 +43,24 @@ jobs:
           file src/passt
           file src/passt | grep -q 'ARM aarch64'
           file src/passt | grep -q 'statically linked'
-          file src/passt | grep -q 'Android 30'
-          # No dynamic loader and no shared library dependencies.
+
+          # No dynamic loader and no shared library dependencies.  These are
+          # the properties that actually matter; do not assert on the toolchain
+          # note in `file`'s output, which varies between `file` versions (the
+          # runner's does not print the NDK string this host's does).
           if readelf -l src/passt | grep -q 'INTERP'; then
             echo "binary has an interpreter (not static)" >&2
             exit 1
           fi
-          readelf -d src/passt 2>/dev/null | grep -q 'NEEDED' && {
-            echo "binary needs shared libraries" >&2; exit 1; } || true
+          if readelf -d src/passt 2>/dev/null | grep -q 'NEEDED'; then
+            echo "binary needs shared libraries" >&2
+            exit 1
+          fi
+
+          # It must be an ARM64 Android binary: check the ELF machine type and
+          # that the Android-specific source guards were compiled in.
+          readelf -h src/passt | grep -q 'AArch64'
+          strings -a src/passt | grep -q 'neoproot-um\|Failed to get netlink socket'
           ls -l src/passt
 
       - uses: actions/upload-artifact@v4
