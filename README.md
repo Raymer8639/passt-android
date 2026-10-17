@@ -78,6 +78,25 @@ socket -- are untouched and still take the full isolation sequence.
 
 That last claim is what the host job in CI verifies.
 
+### Why no other transport is left on Android
+
+passt can normally reach a network in several ways. On an ordinary Android app
+process every one of them except an inherited socket is closed, and not by
+configuration:
+
+| path | what it needs | on an Android app process |
+| --- | --- | --- |
+| `tap` | `CAP_NET_ADMIN` (and `/dev/net/tun` access) to create the interface | no capabilities, no tun device |
+| `pasta` | user namespaces to put the guest in one | `clone(CLONE_NEWUSER)` = `EINVAL`, `unshare()` = `EPERM` |
+| vhost-user / vhost-kernel | a VMM, or `/dev/vhost-net` | neither exists in an app process |
+| an in-process switch (`bess`, `vde`) | a tap at the edge | the same `tap` problem |
+
+What remains is the `fd` transport: whoever owns the L2 side -- in practice a
+UML harness, or any parent that already holds an interface fd -- hands passt a
+socket, and passt only moves frames and terminates TCP/UDP/ICMP on the host.
+That is why prepatched mode is not a workaround around the port: on the phone it
+is the only startup path passt has.
+
 ## Verification
 
 Build and copy `src/passt` to the device, then `./passt --version` and
@@ -87,6 +106,14 @@ For the dataplane, this binary is the passt end of the UML `vec0` bridge in
 `Raymer8639/linux-um-arm64`. The harness there runs the full check and judges
 DHCP, DNS, ICMP and TCP from the guest's own output; see
 `tools/um-arm64/doc/90-networking.md` in that repository.
+
+Device evidence is archived there too: a full network gate run
+(`docs/evidence/2026-10-17-umnet-network.json`, 9/9 checks) names this binary by
+SHA256, `docs/evidence/faults/` holds the judged link-drop / kernel-kill /
+guest-panic scenarios, and the soak tool repeats the gate under
+`--minutes`/`--rounds` bounds. The host job in CI is what guarantees the
+ordinary passt path has not changed; the device records are what prove the
+Android path ran.
 
 ## Upstream
 
