@@ -1854,19 +1854,39 @@ void conf(struct ctx *c, int argc, char **argv)
 
 	/* Android may deny route netlink to an unprivileged app. A passt
 	 * --fd endpoint does not need host interface discovery: all guest-side
-	 * IPv4 values are supplied explicitly by the caller. */
+	 * values are supplied explicitly by the caller, for IPv4 and IPv6
+	 * alike, so the netlink socket is not opened at all in this mode. */
 	fd_local_mode = c->mode == MODE_PASST && c->fd_tap >= 0 &&
-			!v6_only && !c->splice_only;
+			!c->splice_only;
 	if (!fd_local_mode)
 		nl_sock_init(c, false);
 	if (fd_local_mode) {
-		conf_ip4_local(&c->ip4);
-		c->ifi4 = -1;
-	} else if (!v6_only && !c->splice_only) {
-		c->ifi4 = conf_ip4(ifi4, &c->ip4);
+		if (!v6_only) {
+			conf_ip4_local(&c->ip4);
+			c->ifi4 = -1;
+		} else {
+			c->ifi4 = 0;
+		}
+
+		if (!v4_only) {
+			/* Only IPv6 is enabled (-6), so nothing else can
+			 * supply the guest address.  The local-mode default is
+			 * a link-local value, which is not what a caller
+			 * asking for IPv6 wants: refuse instead of silently
+			 * handing the guest an address it never asked for. */
+			if (v6_only && IN6_IS_ADDR_UNSPECIFIED(&c->ip6.addr))
+				die("--fd with IPv6 needs an explicit -a address");
+			conf_ip6_local(&c->ip6);
+			c->ifi6 = -1;
+		} else {
+			c->ifi6 = 0;
+		}
+	} else {
+		if (!v6_only && !c->splice_only)
+			c->ifi4 = conf_ip4(ifi4, &c->ip4);
+		if (!v4_only && !c->splice_only)
+			c->ifi6 = conf_ip6(ifi6, &c->ip6);
 	}
-	if (!v4_only && !c->splice_only)
-		c->ifi6 = conf_ip6(ifi6, &c->ip6);
 
 	if (c->ifi4 && c->mtu < IPV4_MIN_MTU) {
 		warn("MTU %"PRIu16" is too small for IPv4 (minimum %u)",
@@ -1895,6 +1915,9 @@ void conf(struct ctx *c, int argc, char **argv)
 	}
 
 	if (!c->ifi6 && !v4_only) {
+		if (fd_local_mode && v6_only &&
+		    IN6_IS_ADDR_UNSPECIFIED(&c->ip6.addr))
+			die("--fd with IPv6 needs an explicit -a address");
 		if (!c->splice_only) {
 			info("IPv6: no external interface as template, use local mode");
 			conf_ip6_local(&c->ip6);

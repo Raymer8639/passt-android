@@ -62,7 +62,8 @@ over by a parent that already set the interface up (an UML harness, a VMM), none
 of that work is needed or possible. `fd_prepatched()` detects exactly that case
 and skips:
 
-* the netlink probe, using the caller's explicit IPv4 configuration instead;
+* the netlink probe, using the caller's explicit configuration instead -- for
+  IPv4 *and* IPv6, so neither family needs `NETLINK_ROUTE`;
 * `isolate_user()`, so no `setgroups()` and no user namespace;
 * `isolate_prefork()`'s `unshare()` and mount/`pivot_root` sandbox, still
   dropping capabilities;
@@ -70,6 +71,13 @@ and skips:
 
 `make_ugid_map()` no longer treats a failed write to `/proc/<pid>/setgroups` as
 fatal either.
+
+IPv6 uses the same local mode as IPv4: the values come from the caller
+(`-6 -a fd00::2/64 -g fe80::1 -D <dns>`), the prefix length is the one `-a`
+carries and the gateway is the one `-g` names. Because there is no netlink
+socket to ask, an IPv6 prepatched run with `-6` and no `-a` is refused with
+`--fd with IPv6 needs an explicit -a address` rather than falling back to a
+default prefix.
 
 In this mode passt runs as an ordinary unprivileged uid with no namespace
 isolation. Its **seccomp filter still applies**, and it never had privileges to
