@@ -421,7 +421,12 @@ int main(int argc, char **argv)
 	pcap_init(c);
 
 	fwd_neigh_table_init(c);
-	if (!(c->mode == MODE_PASST && c->fd_tap >= 0))
+	/* Neighbour notifications come from netlink, which a prepatched
+	 * endpoint does not have: conf() skipped nl_sock_init() for exactly
+	 * that case.  Use the same predicate for the same reason -- an --fd
+	 * that is not prepatched (no opt-in, or not a connected socket) still
+	 * takes the upstream route and needs the notifications. */
+	if (!fd_prepatched(c))
 		nl_neigh_notify_init(c);
 
 	if (isolate_prefork(c))

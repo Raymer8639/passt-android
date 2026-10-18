@@ -1852,11 +1852,20 @@ void conf(struct ctx *c, int argc, char **argv)
 
 	log_conf_parsed = true;		/* Stop printing everything */
 
-	/* Android may deny route netlink to an unprivileged app. A passt
+	/* Android may deny route netlink to an unprivileged app. A prepatched
 	 * --fd endpoint does not need host interface discovery: all guest-side
 	 * values are supplied explicitly by the caller, for IPv4 and IPv6
-	 * alike, so the netlink socket is not opened at all in this mode. */
-	fd_local_mode = c->mode == MODE_PASST && c->fd_tap >= 0 &&
+	 * alike, so the netlink socket is not opened at all in this mode.
+	 *
+	 * The predicate is fd_prepatched(), the same one isolation.c uses to
+	 * decide whether to skip the sandbox -- not "an --fd was given". --fd
+	 * is an ordinary upstream option, and a caller that did not opt in
+	 * must get the upstream route (netlink plus isolation) even when its
+	 * descriptor is not a socket. Keying this off fd_tap alone would hand
+	 * such a caller local-mode configuration while isolation still ran:
+	 * half of the prepatched behaviour, and a failure that names neither
+	 * the option nor the cause. */
+	fd_local_mode = c->mode == MODE_PASST && fd_prepatched(c) &&
 			!c->splice_only;
 	if (!fd_local_mode)
 		nl_sock_init(c, false);
@@ -1915,9 +1924,9 @@ void conf(struct ctx *c, int argc, char **argv)
 	}
 
 	if (!c->ifi6 && !v4_only) {
-		if (fd_local_mode && v6_only &&
-		    IN6_IS_ADDR_UNSPECIFIED(&c->ip6.addr))
-			die("--fd with IPv6 needs an explicit -a address");
+		/* The equivalent check for local mode already ran above, where
+		 * the local-mode branch sets ifi6 = -1 for every IPv6-enabled
+		 * context -- so this block cannot execute in that case. */
 		if (!c->splice_only) {
 			info("IPv6: no external interface as template, use local mode");
 			conf_ip6_local(&c->ip6);
