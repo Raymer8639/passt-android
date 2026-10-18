@@ -1134,8 +1134,8 @@ bool fd_prepatched(const struct ctx *c)
 {
 	static int allowed = -1;
 	struct stat st;
-	socklen_t len;
-	int err;
+	struct sockaddr_storage peer;
+	socklen_t peerlen = sizeof(peer);
 
 	if (c->fd_tap < 0)
 		return false;
@@ -1170,11 +1170,13 @@ bool fd_prepatched(const struct ctx *c)
 	 * or unconnected fd looks prepatched, the isolation is skipped, and the
 	 * failure only appears later in the event loop with a message that names
 	 * neither the option nor the cause.
+	 *
+	 * getpeername() is the test, not SO_ERROR: SO_ERROR reads 0 for a
+	 * connected, an unconnected, a listening and a datagram AF_UNIX socket
+	 * alike, so it cannot tell them apart.  An unconnected or listening
+	 * socket has no peer and getpeername() fails with ENOTCONN.
 	 */
-	len = sizeof(err);
-	if (getsockopt(c->fd_tap, SOL_SOCKET, SO_ERROR, &err, &len))
-		return false;
-	if (err)
+	if (getpeername(c->fd_tap, (struct sockaddr *)&peer, &peerlen))
 		return false;
 
 	return true;

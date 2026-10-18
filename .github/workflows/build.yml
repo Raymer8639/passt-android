@@ -58,9 +58,19 @@ jobs:
           fi
 
           # It must be an ARM64 Android binary: check the ELF machine type and
-          # that the Android-specific source guards were compiled in.
+          # the Android ABI note the NDK emits.  Earlier checks here asserted on
+          # strings that exist in a plain glibc build too ("Failed to get
+          # netlink socket" is upstream, "neoproot-um" is not in this tree at
+          # all), so they proved nothing about the Android build.
           readelf -h src/passt | grep -q 'AArch64'
-          strings -a src/passt | grep -q 'neoproot-um\|Failed to get netlink socket'
+          readelf -n src/passt | grep -q 'Android'
+          if strings -a src/passt | grep -q 'PASST_ANDROID_NO_ISOLATION'; then
+            # Expected: the opt-in name is part of the build.
+            :
+          else
+            echo "the Android opt-in is not in the artifact" >&2
+            exit 1
+          fi
           ls -l src/passt
 
       - uses: actions/upload-artifact@v4
@@ -88,13 +98,46 @@ jobs:
       - name: The Android behaviour must not leak into the upstream path
         run: |
           set -eux
-          # A --fd that is not a socket, or no --fd at all, has to take the
-          # normal isolation route.  Without permission to make a user
-          # namespace that route fails loudly rather than silently skipping
-          # isolation, which is what we want to see here.
-          if ./src/passt -f -t none -u none >/tmp/host.log 2>&1; then
-            echo "unexpected success with no --fd" >&2
-            cat /tmp/host.log >&2
+          # Without --fd, passt has to take the normal isolation route.  On a
+          # runner with user namespaces that route *succeeds* and passt then
+          # blocks in its event loop, so this needs a timeout; on one without
+          # them it fails with a specific message.  Either way the point is that
+          # it did not take the prepatched shortcut, so the "skipping" messages
+          # must be absent.
+          status=0
+          timeout 10 ./src/passt -f -t none -u none >/tmp/host.log 2>&1 || status=$?
+          cat /tmp/host.log
+          # 124 = still running when the timeout fired: isolation succeeded.
+          if [ "$status" -eq 124 ]; then
+            echo "isolation succeeded (passt was running); that is the expected path"
+          elif [ "$status" -eq 0 ]; then
+            echo "unexpected clean exit with no --fd" >&2
             exit 1
           fi
-          cat /tmp/host.log
+          if grep -q 'Prepatched socket endpoint' /tmp/host.log; then
+            echo "the --fd shortcut leaked into the no---fd path" >&2
+            exit 1
+          fi
+
+      - name: A prepatched socket must be opted into explicitly
+        run: |
+          set -eux
+          # A socket handed over with --fd must NOT skip isolation unless the
+          # caller set the opt-in.  Build a socketpair, pass one end, and check
+          # that the run refuses to treat it as prepatched.
+          python3 - <<'PY'
+          import socket, os, subprocess, sys
+          a, b = socket.socketpair()
+          os.set_inheritable(a.fileno(), True)
+          env = dict(os.environ)
+          env.pop("PASST_ANDROID_NO_ISOLATION", None)
+          p = subprocess.run(["./src/passt", "-f", "-F", str(a.fileno()),
+                              "-t", "none", "-u", "none"],
+                              pass_fds=[a.fileno()], capture_output=True,
+                              text=True, timeout=10)
+          out = p.stdout + p.stderr
+          print(out)
+          if "Prepatched socket endpoint" in out:
+              print("isolation was skipped without the opt-in", file=sys.stderr)
+              sys.exit(1)
+          PY
