@@ -1132,15 +1132,52 @@ long clamped_scale(long x, long y, long lo, long hi, long f)
  */
 bool fd_prepatched(const struct ctx *c)
 {
+	static int allowed = -1;
 	struct stat st;
+	socklen_t len;
+	int err;
 
 	if (c->fd_tap < 0)
+		return false;
+
+	/*
+	 * Skipping isolation is only safe for a socket endpoint handed over by a
+	 * parent that already owns the sandbox.  It is also the only thing that
+	 * works on Android, which denies the namespaces and setgroups calls the
+	 * isolation steps make.
+	 *
+	 * It must not happen by accident in a normal build: `--fd` is an ordinary
+	 * upstream option, and a root process given a socket there is expected to
+	 * drop to nobody and pivot_root like any other passt.  The parent opts in
+	 * explicitly, so a caller that does not ask keeps upstream behaviour.
+	 */
+	if (allowed < 0) {
+		const char *opt = getenv("PASST_ANDROID_NO_ISOLATION");
+
+		allowed = opt && (!strcmp(opt, "1") || !strcmp(opt, "yes"));
+	}
+	if (!allowed)
 		return false;
 
 	if (fstat(c->fd_tap, &st))
 		return false;
 
-	return S_ISSOCK(st.st_mode);
+	if (!S_ISSOCK(st.st_mode))
+		return false;
+
+	/*
+	 * The descriptor must be a *connected* socket.  Without this a listening
+	 * or unconnected fd looks prepatched, the isolation is skipped, and the
+	 * failure only appears later in the event loop with a message that names
+	 * neither the option nor the cause.
+	 */
+	len = sizeof(err);
+	if (getsockopt(c->fd_tap, SOL_SOCKET, SO_ERROR, &err, &len))
+		return false;
+	if (err)
+		return false;
+
+	return true;
 }
 
 /**
@@ -1176,15 +1213,24 @@ void make_ugid_map(pid_t pid, uid_t uid, gid_t gid)
 	if (snprintf_check(gidmap, BUFSIZ, "0 %u 1", gid))
 		die_perror("Can't build gidmap");
 
-	if (write_file(uidmap_path, uidmap) ||
-	    write_file(gidmap_path, gidmap))
+	if (write_file(uidmap_path, uidmap))
 		die("Couldn't configure user mappings");
 
-	/* Writing "deny" to setgroups is only required for the gid map to be
-	 * writable by an unprivileged process, and only Linux 3.19 and later
-	 * have the file at all.  Failure is harmless either way, so it is not
-	 * fatal: glibc builds on some sandboxes, Android in particular, cannot
-	 * reach the file, and nothing here needs the flush it would trigger.
+	/* The order matters and is not optional: for an unprivileged caller the
+	 * gid map is only writable after "deny" has been written to setgroups.
+	 * Writing it afterwards made pasta fail with "Couldn't configure user
+	 * mappings" instead of starting, which is the opposite of the intended
+	 * Android tolerance.
+	 *
+	 * That tolerance still applies where the file is absent or refused: Linux
+	 * before 3.19 has no setgroups, and some sandboxes (Android included) deny
+	 * it.  Failure is only acceptable when writing it was not what made the
+	 * gid map writable, so it is attempted first and its error is kept, not
+	 * fatal -- but a gid_map failure after a *successful* setgroups write is
+	 * reported as the mapping error it is.
 	 */
 	(void)write_file(setgroups_path, "deny");
+
+	if (write_file(gidmap_path, gidmap))
+		die("Couldn't configure user mappings");
 }
