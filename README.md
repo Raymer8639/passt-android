@@ -26,6 +26,28 @@ intentional -- glibc binaries are rejected by Android seccomp before `main()`
 (`set_robust_list` is killed with SIGSYS), and there is no glibc to link
 against on the device anyway.
 
+## The one behaviour switch: `PASST_ANDROID_NO_ISOLATION`
+
+Upstream passt isolates itself: it creates user, mount, PID and IPC
+namespaces, drops to nobody, and `pivot_root()`s into an empty directory. On
+Android an app process may do none of that -- `unshare`, `clone(CLONE_NEWUSER)`
+and `setgroups` are all refused -- so when the interface is an inherited socket
+the isolation is skipped.
+
+That skip is **opt-in**:
+
+```sh
+PASST_ANDROID_NO_ISOLATION=1 passt -f -F 5 ...
+```
+
+`umnet` sets it because it creates the socketpair and owns the sandbox. A
+caller that does not set it gets upstream behaviour, including when it passes a
+socket with `--fd` -- silencing the sandbox for every `--fd` user was a bug, not
+a feature. The variable is checked once, and `fd_prepatched()` additionally
+requires a *connected* socket (`getpeername()`), so a listening or unconnected
+descriptor fails at startup with a clear message instead of skipping isolation
+and failing later.
+
 ## CI
 
 `.github/workflows/build.yml` cross-compiles with the NDK, checks the artifact
