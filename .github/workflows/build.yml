@@ -127,29 +127,29 @@ jobs:
           # normal route succeeds and passt then blocks in its event loop, so
           # the run is bounded and a timeout counts as "isolation happened".
           python3 - <<'PY'
-import os, socket, subprocess, sys
+          import os, socket, subprocess, sys
 
-a, b = socket.socketpair()
-os.set_inheritable(a.fileno(), True)
-env = dict(os.environ)
-env.pop("PASST_ANDROID_NO_ISOLATION", None)
+          a, b = socket.socketpair()
+          os.set_inheritable(a.fileno(), True)
+          env = dict(os.environ)
+          env.pop("PASST_ANDROID_NO_ISOLATION", None)
 
-try:
-    p = subprocess.run(["./src/passt", "-f", "-F", str(a.fileno()),
-                        "-t", "none", "-u", "none"],
-                       pass_fds=[a.fileno()], capture_output=True,
-                       text=True, timeout=10, env=env)
-    out = p.stdout + p.stderr
-    status = p.returncode
-except subprocess.TimeoutExpired as exc:
-    out = ((exc.stdout or b"") + (exc.stderr or b"")).decode(errors="replace")
-    status = 124
+          try:
+              p = subprocess.run(["./src/passt", "-f", "-F", str(a.fileno()),
+                                  "-t", "none", "-u", "none"],
+                                 pass_fds=[a.fileno()], capture_output=True,
+                                 text=True, timeout=10, env=env)
+              out = p.stdout + p.stderr
+              status = p.returncode
+          except subprocess.TimeoutExpired as exc:
+              out = ((exc.stdout or b"") + (exc.stderr or b"")).decode(errors="replace")
+              status = 124
 
-print(out)
-if "Prepatched socket endpoint" in out:
-    print("isolation was skipped without the opt-in", file=sys.stderr)
-    sys.exit(1)
-# 124 means passt was still running: it took the isolation route and then
-# blocked in its event loop, which is the upstream behaviour we expect.
-print(f"passt exit status {status}: isolation was not skipped")
-PY
+          print(out)
+          if "Prepatched socket endpoint" in out:
+              print("isolation was skipped without the opt-in", file=sys.stderr)
+              sys.exit(1)
+          # 124 means passt was still running: it took the isolation route and then
+          # blocked in its event loop, which is the upstream behaviour we expect.
+          print(f"passt exit status {status}: isolation was not skipped")
+          PY
