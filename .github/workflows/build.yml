@@ -119,37 +119,75 @@ jobs:
             exit 1
           fi
 
-      - name: A prepatched socket must be opted into explicitly
+      - name: Only a prepatched socket may take the local-mode shortcut
         run: |
           set -eux
-          # A socket handed over with --fd must NOT skip isolation unless the
-          # caller set the opt-in.  On a runner where user namespaces work the
-          # normal route succeeds and passt then blocks in its event loop, so
-          # the run is bounded and a timeout counts as "isolation happened".
+          # "Prepatched" means all three of: an --fd was given, the caller set
+          # the opt-in, and the descriptor is a *connected socket*.  Anything
+          # less must get the upstream route -- netlink discovery plus
+          # isolation -- and neither the isolation nor the no-netlink local
+          # mode may be applied halfway.
+          #
+          # The probe is -6 without -a: local mode refuses that combination
+          # with a specific message, while the upstream route never prints it.
+          # On a runner where user namespaces work the upstream route succeeds
+          # and passt then blocks in its event loop, so every run is bounded
+          # and a timeout counts as "took the normal route".
           python3 - <<'PY'
           import os, socket, subprocess, sys
 
+          MSG = "--fd with IPv6 needs an explicit -a address"
+          failures = 0
+
+          def run(fd, opt_in):
+              env = dict(os.environ)
+              env.pop("PASST_ANDROID_NO_ISOLATION", None)
+              if opt_in:
+                  env["PASST_ANDROID_NO_ISOLATION"] = "1"
+              try:
+                  p = subprocess.run(["./src/passt", "-f", "-F", str(fd),
+                                      "-6", "-t", "none", "-u", "none"],
+                                     pass_fds=[fd], capture_output=True,
+                                     text=True, timeout=10, env=env)
+                  return p.returncode, p.stdout + p.stderr
+              except subprocess.TimeoutExpired as exc:
+                  out = ((exc.stdout or b"") +
+                         (exc.stderr or b"")).decode(errors="replace")
+                  return 124, out
+
+          def check(label, fd, opt_in, want_msg):
+              global failures
+              status, out = run(fd, opt_in)
+              present = MSG in out
+              ok = present == want_msg
+              print(f"{label}: exit={status} local-mode-refusal="
+                    f"{'yes' if present else 'no'} expected="
+                    f"{'yes' if want_msg else 'no'} -> {'ok' if ok else 'FAIL'}")
+              if not ok:
+                  print(out)
+                  failures += 1
+              if not opt_in and "Prepatched socket endpoint" in out:
+                  print(f"{label}: isolation was skipped without the opt-in",
+                        file=sys.stderr)
+                  failures += 1
+
+          # Connected socket + opt-in: genuinely prepatched; local mode knows
+          # this --fd was not given an -a, and says so.
           a, b = socket.socketpair()
-          os.set_inheritable(a.fileno(), True)
-          env = dict(os.environ)
-          env.pop("PASST_ANDROID_NO_ISOLATION", None)
+          check("socket + opt-in", a.fileno(), True, True)
+          a.close(); b.close()
 
-          try:
-              p = subprocess.run(["./src/passt", "-f", "-F", str(a.fileno()),
-                                  "-t", "none", "-u", "none"],
-                                 pass_fds=[a.fileno()], capture_output=True,
-                                 text=True, timeout=10, env=env)
-              out = p.stdout + p.stderr
-              status = p.returncode
-          except subprocess.TimeoutExpired as exc:
-              out = ((exc.stdout or b"") + (exc.stderr or b"")).decode(errors="replace")
-              status = 124
+          # Connected socket, no opt-in: upstream route (netlink + isolation).
+          a, b = socket.socketpair()
+          check("socket, no opt-in", a.fileno(), False, False)
+          a.close(); b.close()
 
-          print(out)
-          if "Prepatched socket endpoint" in out:
-              print("isolation was skipped without the opt-in", file=sys.stderr)
-              sys.exit(1)
-          # 124 means passt was still running: it took the isolation route and then
-          # blocked in its event loop, which is the upstream behaviour we expect.
-          print(f"passt exit status {status}: isolation was not skipped")
+          # Non-socket --fd: never prepatched, even with the opt-in.  This is
+          # the case that used to get local-mode configuration while isolation
+          # still ran.
+          r, w = os.pipe()
+          check("pipe + opt-in", r, True, False)
+          os.close(r); os.close(w)
+
+          sys.exit(1 if failures else 0)
           PY

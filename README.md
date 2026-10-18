@@ -48,6 +48,14 @@ requires a *connected* socket (`getpeername()`), so a listening or unconnected
 descriptor fails at startup with a clear message instead of skipping isolation
 and failing later.
 
+The same predicate decides whether passt may skip **host-interface discovery**.
+A prepatched endpoint has no host interface to discover -- every guest-side
+value comes from the caller (`-a`, `-g`, `-D`) -- and Android denies route
+netlink to an app uid, so in that case passt does not open a netlink socket at
+all. Anything that is not prepatched (`--fd` without the opt-in, or an `--fd`
+that is not a connected socket) takes the upstream route: netlink discovery
+plus isolation, with no half-applied shortcut.
+
 ## CI
 
 `.github/workflows/build.yml` cross-compiles with the NDK, checks the artifact
