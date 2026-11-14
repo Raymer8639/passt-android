@@ -1,7 +1,7 @@
 # passt-android
 
-Android/bionic ARM64 port of passt, maintained from upstream commit `df90211`
-(version 2026_09_25.df90211).
+Android/bionic ARM64 port of passt, maintained from upstream commit `7380393df27ec3ae4aacb40b6f9f25f75a11acf5`
+(snapshot 2026_11_11.7380393).
 
 passt runs a guest's TCP/IP stack in userspace, so a guest can reach the
 network with no root, no TAP device and no capabilities. On Android that is the
@@ -21,7 +21,9 @@ NDK=/path/to/android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64 \
   ./build-android.sh
 ```
 
-The result is `src/passt`: static, Android API 30, aarch64. Static bionic is
+The result is `.build/android/passt`: static, Android API 30, aarch64.
+`BUILD_DIR` can select another directory outside `src/`; sources and existing
+binaries under `src/` are left intact. Static bionic is
 intentional -- glibc binaries are rejected by Android seccomp before `main()`
 (`set_robust_list` is killed with SIGSYS), and there is no glibc to link
 against on the device anyway.
@@ -40,13 +42,14 @@ That skip is **opt-in**:
 PASST_ANDROID_NO_ISOLATION=1 passt -f -F 5 ...
 ```
 
-`umnet` sets it because it creates the socketpair and owns the sandbox. A
+`umnet` sets it because it creates the socketpair and accepts responsibility
+for the inherited interface and isolation policy. A
 caller that does not set it gets upstream behaviour, including when it passes a
 socket with `--fd` -- silencing the sandbox for every `--fd` user was a bug, not
 a feature. The variable is checked once, and `fd_prepatched()` additionally
-requires a *connected* socket (`getpeername()`), so a listening or unconnected
-descriptor fails at startup with a clear message instead of skipping isolation
-and failing later.
+requires a *connected* socket (`getpeername()`). A listening or unconnected
+descriptor takes ordinary discovery and isolation. Connectedness does not prove
+AF_UNIX, stream framing, or an existing parent sandbox.
 
 The same predicate decides whether passt may skip **host-interface discovery**.
 A prepatched endpoint has no host interface to discover -- every guest-side
@@ -109,10 +112,12 @@ socket to ask, an IPv6 prepatched run with `-6` and no `-a` is refused with
 `--fd with IPv6 needs an explicit -a address` rather than falling back to a
 default prefix.
 
-In this mode passt runs as an ordinary unprivileged uid with no namespace
-isolation. Its **seccomp filter still applies**, and it never had privileges to
-lose. The default passt/pasta paths -- no `--fd`, or a `--fd` that is not a
-socket -- are untouched and still take the full isolation sequence.
+This mode is intended for an ordinary Android app uid. It skips credential
+changes as well as namespace isolation: an explicit root caller remains root,
+and `--runas` is not applied. A connected fd is not evidence of a sandbox.
+The **seccomp filter and capability clamp still apply**. Callers must supply a
+properly framed stream and provide their own isolation policy. Ordinary `--fd`
+without the opt-in takes the full upstream discovery and isolation sequence.
 
 That last claim is what the host job in CI verifies.
 
@@ -137,7 +142,7 @@ is the only startup path passt has.
 
 ## Verification
 
-Build and copy `src/passt` to the device, then `./passt --version` and
+Build and copy `.build/android/passt` to the device, then `./passt --version` and
 `./passt --help` must exit 0 without SIGSYS.
 
 For the dataplane, this binary is the passt end of the UML `vec0` bridge in
@@ -155,10 +160,21 @@ Android path ran.
 
 ## Upstream
 
-Source: <https://passt.top/passt>, commit `df90211`. The prepatched-socket
-behaviour is a downstream change and a reasonable candidate to offer upstream:
-"run correctly when handed an interface socket and denied namespace creation"
-is a normal thing for passt to support.
+Source: <https://passt.top/passt>, commit
+`7380393df27ec3ae4aacb40b6f9f25f75a11acf5` (official master/HEAD checked
+2026-11-14). All 20 commits after `df90211` are included. The prepatched-socket
+behaviour remains downstream; its current credential and fd validation semantics
+are not an upstream-ready sandbox interface. No RFC has been sent.
+
+The inherited-fd API now uses upstream `conf_fds()` and
+`isolate_fds(ctx, argc, argv)`. The pasta-only `--pass-fds` option preserves fds
+for a spawned command; it does not request prepatched mode. Guest addresses and
+prefix lengths use upstream `guest_addr` entries (IPv4 prefixes store +96).
+Explicit IPv6 local configuration also initialises `addr_seen` for inbound/NAT.
+
+Run `make -C src check-tcp check-android CC=gcc` and the bounded
+`python3 src/test/config-regression.py .build/host/passt` against a host build.
+CI uses separate `.build/android` and `.build/host` directories.
 
 ## Layout
 

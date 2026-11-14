@@ -45,6 +45,14 @@ li {
 
 # passt: Plug A Simple Socket Transport
 
+> Android fork layout: this is the vendored upstream source tree from official
+> commit `7380393df27ec3ae4aacb40b6f9f25f75a11acf5`, plus downstream Android
+> compatibility. See [the fork README](../README.md) for supported behaviour.
+> From the repository root, [build-android.sh](../build-android.sh) builds into
+> `.build/android/passt`; host CI copies this directory to `.build/host`.
+> The upstream instructions below assume the current directory is this `src/`
+> tree. Ordinary inherited `--fd` does not opt out of isolation.
+
 _passt_ implements a translation layer between a Layer-2 network interface and
 native Layer-4 sockets (TCP, UDP, ICMP/ICMPv6 echo) on a host. It doesn't
 require any capabilities or privileges, and it can be used as a simple

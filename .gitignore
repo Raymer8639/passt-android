@@ -2,3 +2,5 @@
 passt
 src/passt
 *.o
+.build/
+.sync/

@@ -33,26 +33,24 @@ jobs:
       - name: Cross-compile for Android
         run: |
           set -eux
-          TOOL="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          CC="$TOOL/clang --target=aarch64-linux-android30"
-          make -C src passt CC="$CC" TARGET=aarch64-linux-android30 LDFLAGS=-static
+          env -i PATH=/usr/bin:/bin NDK="$NDK/toolchains/llvm/prebuilt/linux-x86_64" ./build-android.sh
 
       - name: Verify the artifact is a static Android binary
         run: |
           set -eux
-          file src/passt
-          file src/passt | grep -q 'ARM aarch64'
-          file src/passt | grep -q 'statically linked'
+          file .build/android/passt
+          file .build/android/passt | grep -q 'ARM aarch64'
+          file .build/android/passt | grep -q 'statically linked'
 
           # No dynamic loader and no shared library dependencies.  These are
           # the properties that actually matter; do not assert on the toolchain
           # note in `file`'s output, which varies between `file` versions (the
           # runner's does not print the NDK string this host's does).
-          if readelf -l src/passt | grep -q 'INTERP'; then
+          if readelf -l .build/android/passt | grep -q 'INTERP'; then
             echo "binary has an interpreter (not static)" >&2
             exit 1
           fi
-          if readelf -d src/passt 2>/dev/null | grep -q 'NEEDED'; then
+          if readelf -d .build/android/passt 2>/dev/null | grep -q 'NEEDED'; then
             echo "binary needs shared libraries" >&2
             exit 1
           fi
@@ -62,21 +60,21 @@ jobs:
           # strings that exist in a plain glibc build too ("Failed to get
           # netlink socket" is upstream, "neoproot-um" is not in this tree at
           # all), so they proved nothing about the Android build.
-          readelf -h src/passt | grep -q 'AArch64'
-          readelf -n src/passt | grep -q 'Android'
-          if strings -a src/passt | grep -q 'PASST_ANDROID_NO_ISOLATION'; then
+          readelf -h .build/android/passt | grep -q 'AArch64'
+          readelf -n .build/android/passt | grep -q 'Android'
+          if strings -a .build/android/passt | grep -q 'PASST_ANDROID_NO_ISOLATION'; then
             # Expected: the opt-in name is part of the build.
             :
           else
             echo "the Android opt-in is not in the artifact" >&2
             exit 1
           fi
-          ls -l src/passt
+          ls -l .build/android/passt
 
       - uses: actions/upload-artifact@v4
         with:
           name: passt-android-arm64
-          path: src/passt
+          path: .build/android/passt
           if-no-files-found: error
 
   upstream-build:
@@ -88,109 +86,14 @@ jobs:
       - name: Build for the host
         run: |
           set -eux
-          make -C src passt CC=gcc TARGET=x86_64-linux-gnu LDFLAGS=
+          mkdir -p .build/host
+          cp -R src/. .build/host/
+          env -i PATH=/usr/bin:/bin make -C .build/host passt passt-repair pesto pasta CC=gcc CFLAGS=-Werror LDFLAGS=
 
       - name: TCP small-MSS and FIN duplicate-ACK regressions
-        run: env -i PATH=/usr/bin:/bin make -C src check-tcp CC=gcc
+        run: env -i PATH=/usr/bin:/bin make -C src check-tcp check-android CC=gcc
 
-      - name: The host binary must still start
+      - name: Check host version and bounded configuration regressions
         run: |
-          set -eux
-          ./src/passt --version
-
-      - name: The Android behaviour must not leak into the upstream path
-        run: |
-          set -eux
-          # Without --fd, passt has to take the normal isolation route.  On a
-          # runner with user namespaces that route *succeeds* and passt then
-          # blocks in its event loop, so this needs a timeout; on one without
-          # them it fails with a specific message.  Either way the point is that
-          # it did not take the prepatched shortcut, so the "skipping" messages
-          # must be absent.
-          status=0
-          timeout 10 ./src/passt -f -t none -u none >/tmp/host.log 2>&1 || status=$?
-          cat /tmp/host.log
-          # 124 = still running when the timeout fired: isolation succeeded.
-          if [ "$status" -eq 124 ]; then
-            echo "isolation succeeded (passt was running); that is the expected path"
-          elif [ "$status" -eq 0 ]; then
-            echo "unexpected clean exit with no --fd" >&2
-            exit 1
-          fi
-          if grep -q 'Prepatched socket endpoint' /tmp/host.log; then
-            echo "the --fd shortcut leaked into the no---fd path" >&2
-            exit 1
-          fi
-
-      - name: Only a prepatched socket may take the local-mode shortcut
-        run: |
-          set -eux
-          # "Prepatched" means all three of: an --fd was given, the caller set
-          # the opt-in, and the descriptor is a *connected socket*.  Anything
-          # less must get the upstream route -- netlink discovery plus
-          # isolation -- and neither the isolation nor the no-netlink local
-          # mode may be applied halfway.
-          #
-          # The probe is -6 without -a: local mode refuses that combination
-          # with a specific message, while the upstream route never prints it.
-          # On a runner where user namespaces work the upstream route succeeds
-          # and passt then blocks in its event loop, so every run is bounded
-          # and a timeout counts as "took the normal route".
-          python3 - <<'PY'
-          import os, socket, subprocess, sys
-
-          MSG = "--fd with IPv6 needs an explicit -a address"
-          failures = 0
-
-          def run(fd, opt_in):
-              env = dict(os.environ)
-              env.pop("PASST_ANDROID_NO_ISOLATION", None)
-              if opt_in:
-                  env["PASST_ANDROID_NO_ISOLATION"] = "1"
-              try:
-                  p = subprocess.run(["./src/passt", "-f", "-F", str(fd),
-                                      "-6", "-t", "none", "-u", "none"],
-                                     pass_fds=[fd], capture_output=True,
-                                     text=True, timeout=10, env=env)
-                  return p.returncode, p.stdout + p.stderr
-              except subprocess.TimeoutExpired as exc:
-                  out = ((exc.stdout or b"") +
-                         (exc.stderr or b"")).decode(errors="replace")
-                  return 124, out
-
-          def check(label, fd, opt_in, want_msg):
-              global failures
-              status, out = run(fd, opt_in)
-              present = MSG in out
-              ok = present == want_msg
-              print(f"{label}: exit={status} local-mode-refusal="
-                    f"{'yes' if present else 'no'} expected="
-                    f"{'yes' if want_msg else 'no'} -> {'ok' if ok else 'FAIL'}")
-              if not ok:
-                  print(out)
-                  failures += 1
-              if not opt_in and "Prepatched socket endpoint" in out:
-                  print(f"{label}: isolation was skipped without the opt-in",
-                        file=sys.stderr)
-                  failures += 1
-
-          # Connected socket + opt-in: genuinely prepatched; local mode knows
-          # this --fd was not given an -a, and says so.
-          a, b = socket.socketpair()
-          check("socket + opt-in", a.fileno(), True, True)
-          a.close(); b.close()
-
-          # Connected socket, no opt-in: upstream route (netlink + isolation).
-          a, b = socket.socketpair()
-          check("socket, no opt-in", a.fileno(), False, False)
-          a.close(); b.close()
-
-          # Non-socket --fd: never prepatched, even with the opt-in.  This is
-          # the case that used to get local-mode configuration while isolation
-          # still ran.
-          r, w = os.pipe()
-          check("pipe + opt-in", r, True, False)
-          os.close(r); os.close(w)
-
-          sys.exit(1 if failures else 0)
-          PY
+          env -i PATH=/usr/bin:/bin ./.build/host/passt --version
+          env -i PATH=/usr/bin:/bin python3 src/test/config-regression.py .build/host/passt

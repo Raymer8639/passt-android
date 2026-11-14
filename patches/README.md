@@ -11,10 +11,25 @@ rebasing onto a newer upstream needs to know.
    changes" table. They are all guarded, so `git grep -n '__ANDROID__' src`
    finds most of them; the prepatched-socket mode is the exception and is
    identified by `fd_prepatched()`.
-3. Update the upstream commit hash and version in `README.md`.
-4. Run CI: the android job must still produce a static Android aarch64 binary,
-   and the host job must still build and still refuse to skip isolation when
-   `--fd` is absent.
+3. Update the upstream commit hash and version in `README.md` and the snapshot
+   version in `build-android.sh`. Current upstream is
+   `7380393df27ec3ae4aacb40b6f9f25f75a11acf5` (2026-11-14 verification).
+   The full `df90211..7380393` interval is included, including existing
+   MSS/FIN fixes; do not apply those fixes a second time.
+4. Build in separate directories: `build-android.sh` defaults to `.build/android`,
+   and the host job copies sources into `.build/host`. Run `make -C src check-tcp
+   check-android CC=gcc`, then bounded `test/config-regression.py` against the
+   host binary. CI checks static Android ELF, ordinary `--fd` without opt-in,
+   and IPv4/IPv6 explicit configuration.
+5. Local configuration now takes `struct ctx *` and uses `fwd_get_addr()` and
+   `guest_addr` prefixes instead of removed `ip4.addr` / `ip6.addr` members.
+   Keep IPv6 local `addr_seen` initialisation: `addr_fixed` prevents learning
+   it from traffic. Upstream `--pass-fds` changes early fd handling; it does
+   not enable the Android shortcut.
+6. Keep uid_map -> setgroups=deny -> gid_map ordering. Upstream mapping write
+   failures warn rather than abort; downstream attempts all three writes in
+   that order and tolerates setgroups failure. Regression stubs procfs writes
+   and covers all eight success/failure combinations.
 
 The prepatched branch in `conf()` is the part to read closely: it covers
 IPv4 *and* IPv6 (`conf_ip4_local()` and `conf_ip6_local()`), never opens a netlink
