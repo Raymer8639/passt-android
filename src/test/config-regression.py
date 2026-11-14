@@ -46,6 +46,9 @@ def main():
             check("connected + " + opt, a.fileno(), opt, True)
         for opt in (None, "0", "true"):
             check("connected + " + str(opt), a.fileno(), opt, False)
+        code, output = run(a.fileno(), "1", ["-6", "-a", "192.0.2.2/24"])
+        assert MSG in output and code not in (0, 124), (code, output)
+        print("IPv6 with IPv4-only address PASS refused", flush=True)
         for label, args, required in (
             ("IPv4 CIDR", ["-4", "-a", "192.0.2.2/24", "-g", "192.0.2.1", "-D", "192.0.2.53"],
              ("assign: 192.0.2.2", "mask: 255.255.255.0", "router: 192.0.2.1", "192.0.2.53")),
