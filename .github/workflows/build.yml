@@ -90,6 +90,9 @@ jobs:
           set -eux
           make -C src passt CC=gcc TARGET=x86_64-linux-gnu LDFLAGS=
 
+      - name: TCP small-MSS and FIN duplicate-ACK regressions
+        run: env -i PATH=/usr/bin:/bin make -C src check-tcp CC=gcc
+
       - name: The host binary must still start
         run: |
           set -eux

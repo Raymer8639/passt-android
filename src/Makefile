@@ -123,6 +123,10 @@ valgrind: BASE_CPPFLAGS += -DVALGRIND
 valgrind: BASE_CFLAGS += -g
 valgrind: all
 
+.PHONY: check-tcp
+check-tcp:
+	CC="$(CC)" python3 test/tcp-regression.py
+
 .PHONY: clean
 clean:
 	$(RM) $(BIN) *~ *.o seccomp.h seccomp_repair.h seccomp_pesto.h pasta.1 \
