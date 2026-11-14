@@ -47,6 +47,7 @@
 #include "lineread.h"
 #include "isolation.h"
 #include "log.h"
+#include "dhcp.h"
 #include "vhost_user.h"
 #include "epoll_ctl.h"
 #include "conf.h"
@@ -372,13 +373,19 @@ static uint8_t conf_ip4_prefix(const char *arg)
 
 /**
  * conf_ip4() - Verify or detect IPv4 support, get relevant addresses
+ * @c:		Execution context
  * @ifi:	Host interface to attempt (0 to determine one)
- * @ip4:	IPv4 context (will be written)
  *
  * Return: interface index for IPv4, or 0 on failure.
  */
-static unsigned int conf_ip4(unsigned int ifi, struct ip4_ctx *ip4)
+static unsigned int conf_ip4(struct ctx *c, unsigned int ifi)
 {
+	struct ip4_ctx *ip4 = &c->ip4;
+	const struct guest_addr *a;
+	const struct in_addr *a4;
+
+	a = fwd_get_addr(c, AF_INET, true, CONF_ADDR_ANY);
+
 	if (!ifi)
 		ifi = nl_get_ext_if(nl_sock, AF_INET);
 
@@ -397,67 +404,75 @@ static unsigned int conf_ip4(unsigned int ifi, struct ip4_ctx *ip4)
 		}
 	}
 
-	if (IN4_IS_ADDR_UNSPECIFIED(&ip4->addr)) {
+	if (!a) {
+		struct in_addr addr = { 0 };
+		int prefix_len = 0;
 		int rc = nl_addr_get(nl_sock, ifi, AF_INET,
-				     &ip4->addr, &ip4->prefix_len, NULL);
+				     &addr, &prefix_len, NULL);
 		if (rc < 0) {
 			debug("Couldn't discover IPv4 address: %s",
 			      strerror_(-rc));
 			return 0;
 		}
+		if (IN4_IS_ADDR_UNSPECIFIED(&addr)) {
+			warn("Host returned address 0.0.0.0");
+			return 0;
+		}
+		fwd_set_addr(c, &inany_from_v4(addr), CONF_ADDR_HOST,
+			     prefix_len + 96);
 	}
 
-	if (!ip4->prefix_len) {
-		in_addr_t addr = ntohl(ip4->addr.s_addr);
-		if (IN_CLASSA(addr))
-			ip4->prefix_len = (32 - IN_CLASSA_NSHIFT);
-		else if (IN_CLASSB(addr))
-			ip4->prefix_len = (32 - IN_CLASSB_NSHIFT);
-		else if (IN_CLASSC(addr))
-			ip4->prefix_len = (32 - IN_CLASSC_NSHIFT);
-		else
-			ip4->prefix_len = 32;
-	}
-
-	ip4->addr_seen = ip4->addr;
-
+	a = fwd_get_addr(c, AF_INET, true, CONF_ADDR_ANY);
+	assert(a);
+	a4 = inany_v4(&a->addr);
+	assert(a4);
+	ip4->addr_seen = *a4;
 	ip4->our_tap_addr = ip4->guest_gw;
-
-	if (IN4_IS_ADDR_UNSPECIFIED(&ip4->addr))
-		return 0;
 
 	return ifi;
 }
 
 /**
  * conf_ip4_local() - Configure IPv4 addresses and attributes for local mode
- * @ip4:	IPv4 context (will be written)
+ * @c:		Execution context (will be written)
  */
-static void conf_ip4_local(struct ip4_ctx *ip4)
+static void conf_ip4_local(struct ctx *c)
 {
-	if (IN4_IS_ADDR_UNSPECIFIED(&ip4->addr))
-		ip4->addr = IP4_LL_GUEST_ADDR;
-	ip4->addr_seen = ip4->addr;
+	struct ip4_ctx *ip4 = &c->ip4;
+	const struct guest_addr *a;
+
+	a = fwd_get_addr(c, AF_INET, true, CONF_ADDR_ANY);
+
+	if (!a) {
+		fwd_set_addr(c, &inany_from_v4(IP4_LL_GUEST_ADDR),
+			     CONF_ADDR_GEN, IP4_LL_PREFIX_LEN + 96);
+		ip4->addr_seen = IP4_LL_GUEST_ADDR;
+	} else {
+		const struct in_addr *a4 = inany_v4(&a->addr);
+
+		assert(a4);
+		ip4->addr_seen = *a4;
+	}
 
 	if (IN4_IS_ADDR_UNSPECIFIED(&ip4->guest_gw))
 		ip4->guest_gw = IP4_LL_GUEST_GW;
 	ip4->our_tap_addr = ip4->guest_gw;
-
-	if (!ip4->prefix_len)
-		ip4->prefix_len = IP4_LL_PREFIX_LEN;
 
 	ip4->no_copy_addrs = ip4->no_copy_routes = true;
 }
 
 /**
  * conf_ip6() - Verify or detect IPv6 support, get relevant addresses
+ * @c:		Execution context
  * @ifi:	Host interface to attempt (0 to determine one)
- * @ip6:	IPv6 context (will be written)
  *
  * Return: interface index for IPv6, or 0 on failure.
  */
-static unsigned int conf_ip6(unsigned int ifi, struct ip6_ctx *ip6)
+static unsigned int conf_ip6(struct ctx *c, unsigned int ifi)
 {
+	struct ip6_ctx *ip6 = &c->ip6;
+	const struct guest_addr *a;
+	union inany_addr addr;
 	int prefix_len = 0;
 	int rc;
 
@@ -478,23 +493,30 @@ static unsigned int conf_ip6(unsigned int ifi, struct ip6_ctx *ip6)
 		}
 	}
 
-	rc = nl_addr_get(nl_sock, ifi, AF_INET6,
-			 IN6_IS_ADDR_UNSPECIFIED(&ip6->addr) ? &ip6->addr : NULL,
+	rc = nl_addr_get(nl_sock, ifi, AF_INET6, &addr.a6,
 			 &prefix_len, &ip6->our_tap_ll);
 	if (rc < 0) {
 		debug("Couldn't discover IPv6 address: %s", strerror_(-rc));
 		return 0;
 	}
 
-	ip6->addr_seen = ip6->addr;
+	a = fwd_get_addr(c, AF_INET6, true, CONF_ADDR_ANY);
+	if (!a) {
+		if (IN6_IS_ADDR_UNSPECIFIED(&addr))
+			return 0;
+
+		fwd_set_addr(c, &addr, CONF_ADDR_HOST, prefix_len);
+		ip6->addr_seen = addr.a6;
+	} else {
+		ip6->addr_seen = a->addr.a6;
+	}
 
 	if (IN6_IS_ADDR_LINKLOCAL(&ip6->guest_gw))
 		ip6->our_tap_ll = ip6->guest_gw;
 	else
 		ip6->our_tap_addr = ip6->guest_gw;
 
-	if (IN6_IS_ADDR_UNSPECIFIED(&ip6->addr) ||
-	    IN6_IS_ADDR_UNSPECIFIED(&ip6->our_tap_ll))
+	if (IN6_IS_ADDR_UNSPECIFIED(&ip6->our_tap_ll))
 		return 0;
 
 	return ifi;
@@ -502,10 +524,19 @@ static unsigned int conf_ip6(unsigned int ifi, struct ip6_ctx *ip6)
 
 /**
  * conf_ip6_local() - Configure IPv6 addresses and attributes for local mode
- * @ip6:	IPv6 context (will be written)
+ * @c:		Execution context (will be written)
  */
-static void conf_ip6_local(struct ip6_ctx *ip6)
+static void conf_ip6_local(struct ctx *c)
 {
+	struct ip6_ctx *ip6 = &c->ip6;
+	const struct guest_addr *a;
+
+	/* Explicit local addresses must initialise inbound/NAT state as well as
+	 * DHCPv6/NDP: addr_fixed disables learning this value from tap traffic. */
+	a = fwd_get_addr(c, AF_INET6, true, CONF_ADDR_ANY);
+	if (a)
+		ip6->addr_seen = a->addr.a6;
+
 	if (IN6_IS_ADDR_UNSPECIFIED(&ip6->guest_gw))
 		ip6->guest_gw = IP6_LL_GUEST_GW;
 
@@ -632,7 +663,9 @@ static void usage(const char *name, FILE *f, int status)
 		"  -S, --search LIST	Space-separated list, search domains\n"
 		"    a single, empty option disables the DNS search list\n"
 		"  -H, --hostname NAME 	Hostname to configure client with\n"
-		"  --fqdn NAME		FQDN to configure client with\n");
+		"  --fqdn NAME		FQDN to configure client with\n"
+		"  --dhcp-opt CODE,VAL	Set DHCP option CODE to VAL\n"
+		"  --dhcp-boot FILE	Boot file name for network boot\n");
 	if (strstr(name, "pasta"))
 		FPRINTF(f, "    default: don't use any search list\n");
 	else
@@ -750,7 +783,8 @@ pasta_opts:
 		"			Don't copy all addresses to namespace\n"
 		"  --ns-mac-addr ADDR	Set MAC address on tap interface\n"
 		"  --no-splice		Disable inbound socket splicing\n"
-		"  --splice-only	Only enable loopback forwarding\n");
+		"  --splice-only	Only enable loopback forwarding\n"
+		"  --pass-fds		Preserve open file descriptors\n");
 
 	passt_exit(status);
 }
@@ -801,6 +835,7 @@ enum passt_modes conf_mode(int argc, char *argv[])
 static void conf_print(const struct ctx *c)
 {
 	char buf[INANY_ADDRSTRLEN];
+	const struct guest_addr *a;
 	int i;
 
 	if (c->fd_control_listen >= 0)
@@ -848,19 +883,26 @@ static void conf_print(const struct ctx *c)
 			     inet_ntop(AF_INET, &c->ip4.map_host_loopback,
 				       buf, sizeof(buf)));
 
-		if (!c->no_dhcp) {
+		a = fwd_get_addr(c, AF_INET, true, CONF_ADDR_ANY);
+		if (a && !c->no_dhcp) {
 			uint32_t mask;
+			int plen = 0;
 
-			mask = htonl(0xffffffff << (32 - c->ip4.prefix_len));
+			inany_prefix_v4(&a->addr, a->prefix_len, &plen);
+			mask = IN4_MASK(plen);
 
 			info("DHCP:");
 			info("    assign: %s",
-			     inet_ntop(AF_INET, &c->ip4.addr, buf, sizeof(buf)));
+			     inany_ntop(&a->addr, buf, sizeof(buf)));
 			info("    mask: %s",
-			     inet_ntop(AF_INET, &mask,        buf, sizeof(buf)));
+			     inet_ntop(AF_INET, &mask, buf, sizeof(buf)));
 			info("    router: %s",
 			     inet_ntop(AF_INET, &c->ip4.guest_gw,
 				       buf, sizeof(buf)));
+			for (i = 1; i < 255; i++) {
+				if (dhcp_opt_to_str(i, buf, sizeof(buf)))
+					info("    option %u: %s", i, buf);
+			}
 		}
 
 		for (i = 0; i < ARRAY_SIZE(c->ip4.dns); i++) {
@@ -868,8 +910,8 @@ static void conf_print(const struct ctx *c)
 				break;
 			if (!i)
 				info("DNS:");
-			inet_ntop(AF_INET, &c->ip4.dns[i], buf, sizeof(buf));
-			info("    %s", buf);
+			info("    %s", inet_ntop(AF_INET, &c->ip4.dns[i],
+						 buf, sizeof(buf)));
 		}
 
 		for (i = 0; *c->dns_search[i].n; i++) {
@@ -894,13 +936,14 @@ static void conf_print(const struct ctx *c)
 		else
 			goto dns6;
 
-		info("    assign: %s",
-		     inet_ntop(AF_INET6, &c->ip6.addr, buf, sizeof(buf)));
+		a = fwd_get_addr(c, AF_INET6, true, CONF_ADDR_ANY);
+		if (a)
+			info("    assign: %s",
+			     inany_ntop(&a->addr, buf, sizeof(buf)));
 		info("    router: %s",
 		     inet_ntop(AF_INET6, &c->ip6.guest_gw, buf, sizeof(buf)));
 		info("    our link-local: %s",
-		     inet_ntop(AF_INET6, &c->ip6.our_tap_ll,
-			       buf, sizeof(buf)));
+		     inet_ntop(AF_INET6, &c->ip6.our_tap_ll, buf, sizeof(buf)));
 
 dns6:
 		for (i = 0; i < ARRAY_SIZE(c->ip6.dns); i++) {
@@ -908,8 +951,10 @@ dns6:
 			    break;
 			if (!i)
 				info("DNS:");
-			inet_ntop(AF_INET6, &c->ip6.dns[i], buf, sizeof(buf));
-			info("    %s", buf);
+			info("    %s",
+			     inet_ntop(AF_INET6, &c->ip6.dns[i],
+				       buf, sizeof(buf)));
+
 		}
 
 		for (i = 0; *c->dns_search[i].n; i++) {
@@ -1137,35 +1182,38 @@ static void conf_sock_listen(const struct ctx *c)
 }
 
 /**
- * conf_tap_fd() - Read tap fd as supplied by -F command line option
+ * conf_fds() - Read fds as supplied by -F/--fd and --pass-fds options
+ * @c:		Execution context
  * @argc:	Argument count
  * @argv:	Command line options
- *
- * Return: fd number from --fd option, or -1 if not supplied
  */
-int conf_tap_fd(int argc, char **argv)
+void conf_fds(struct ctx *c, int argc, char **argv)
 {
-	const struct option optfd[] = {	{ "fd", required_argument, NULL, 'F' },
-					{ 0 }, };
-	const char *fdarg = NULL, *p;
-	unsigned long val;
+	const struct option opt[] = {
+		{ "fd",       required_argument, NULL, 'F' },
+		{ "pass-fds", no_argument,       NULL, 2 },
+		{ 0 },
+	};
 	int name;
 
+	c->fd_tap = -1;
+	c->pass_fds = false;
 	optind = 0;
 	do {
-		name = getopt_long(argc, argv, "-:F:", optfd, NULL);
-		if (name == 'F')
-			fdarg = optarg;
+		name = getopt_long(argc, argv, "-:F:", opt, NULL);
+		if (name == 'F') {
+			const char *p = optarg;
+			unsigned long val;
+
+			if (!parse_unsigned(&p, 0, &val) || !parse_eoi(p) ||
+			    val > INT_MAX)
+				die("Invalid --fd: %s", optarg);
+
+			c->fd_tap = (int)val;
+		} else if (name == 2) {
+			c->pass_fds = true;
+		}
 	} while (name != -1);
-
-	if (!fdarg)
-		return -1;
-
-	p = fdarg;
-	if (!parse_unsigned(&p, 0, &val) || !parse_eoi(p) || val > INT_MAX)
-		die("Invalid --fd: %s", fdarg);
-
-	return val;
 }
 
 /**
@@ -1213,15 +1261,13 @@ static bool conf_addr(struct ctx *c, char *arg, uint8_t opt_n)
 	    inany_is_loopback(&addr))
 		goto bad;
 
+	fwd_set_addr(c, &addr, CONF_ADDR_USER, prefix_len);
 	if (a4) {
-		c->ip4.addr = *a4;
-		c->ip4.prefix_len = prefix_len - 96;
-		c->ip4.addr_fixed = true;
 		c->ip4.no_copy_addrs = true;
+		c->ip4.addr_fixed = true;
 	} else {
-		c->ip6.addr = addr.a6;
-		c->ip6.addr_fixed = true;
 		c->ip6.no_copy_addrs = true;
+		c->ip6.addr_fixed = true;
 	}
 
 	return is_prefix;
@@ -1317,6 +1363,9 @@ void conf(struct ctx *c, int argc, char **argv)
 		{"conf-path",	required_argument,	NULL,		'c' },
 		{"chroot-fallback", no_argument,	NULL, 		32 },
 		{"no-pidns",	no_argument,		NULL,		33 },
+		{"dhcp-opt", required_argument,		NULL,		34 },
+		{"dhcp-boot", required_argument,	NULL,		35 },
+		{"pass-fds",	no_argument,		NULL,		36 },
 		{ 0 },
 	};
 	const char *optstring = "+dqfel:hs:c:F:I:p:P:m:a:n:M:g:i:o:D:S:H:461t:u:T:U:";
@@ -1332,6 +1381,8 @@ void conf(struct ctx *c, int argc, char **argv)
 	bool fd_local_mode;
 	bool opt_a_is_prefix = false;
 	const char *logfile = NULL;
+	unsigned long optcode;
+	struct guest_addr *a;
 	char *runas = NULL;
 	size_t logsize = 0;
 	uint8_t opt_n = 0;
@@ -1568,6 +1619,29 @@ void conf(struct ctx *c, int argc, char **argv)
 
 			c->no_pidns = true;
 			break;
+		case 34:
+			p = optarg;
+
+			if (!parse_unsigned(&p, 0, &optcode) ||
+			    !parse_literal(&p, ",")) {
+				die("--dhcp-opt requires CODE,VALUE format");
+			}
+
+			if (optcode < 1 || optcode > 254) {
+				die("DHCP option code must be 1-254: %s",
+				    optarg);
+			}
+
+			dhcp_set_opt(optcode, p);
+			break;
+		case 35:
+			dhcp_set_opt(67, optarg);
+			break;
+		case 36:
+			/* --pass-fds was parsed early */
+			if (c->mode != MODE_PASTA)
+				die("--pass-fds is for pasta mode only");
+			break;
 		case 'd':
 			c->debug = 1;
 			c->quiet = 0;
@@ -1604,7 +1678,7 @@ void conf(struct ctx *c, int argc, char **argv)
 			c->fd_control_listen = c->fd_control = -1;
 			break;
 		case 'F':
-			/* --fd was parsed early and c->fd_tap set in main() */
+			/* --fd was parsed early */
 			c->one_off = true;
 			*c->sock_path = 0;
 			break;
@@ -1653,8 +1727,12 @@ void conf(struct ctx *c, int argc, char **argv)
 			if (opt_a_is_prefix)
 				die("Redundant prefix length specification");
 
-			c->ip4.prefix_len = conf_ip4_prefix(optarg);
-			opt_n = c->ip4.prefix_len + 96;
+			opt_n = conf_ip4_prefix(optarg) + 96;
+
+			for_each_addr(a, c->addrs, c->addr_count, AF_INET) {
+				a->prefix_len = opt_n;
+				break;
+			}
 			break;
 		case 'M':
 			p = optarg;
@@ -1871,7 +1949,7 @@ void conf(struct ctx *c, int argc, char **argv)
 		nl_sock_init(c, false);
 	if (fd_local_mode) {
 		if (!v6_only) {
-			conf_ip4_local(&c->ip4);
+			conf_ip4_local(c);
 			c->ifi4 = -1;
 		} else {
 			c->ifi4 = 0;
@@ -1883,18 +1961,19 @@ void conf(struct ctx *c, int argc, char **argv)
 			 * a link-local value, which is not what a caller
 			 * asking for IPv6 wants: refuse instead of silently
 			 * handing the guest an address it never asked for. */
-			if (v6_only && IN6_IS_ADDR_UNSPECIFIED(&c->ip6.addr))
+			if (v6_only && !fwd_get_addr(c, AF_INET6, true,
+						     CONF_ADDR_USER))
 				die("--fd with IPv6 needs an explicit -a address");
-			conf_ip6_local(&c->ip6);
+			conf_ip6_local(c);
 			c->ifi6 = -1;
 		} else {
 			c->ifi6 = 0;
 		}
 	} else {
 		if (!v6_only && !c->splice_only)
-			c->ifi4 = conf_ip4(ifi4, &c->ip4);
+			c->ifi4 = conf_ip4(c, ifi4);
 		if (!v4_only && !c->splice_only)
-			c->ifi6 = conf_ip6(ifi6, &c->ip6);
+			c->ifi6 = conf_ip6(c, ifi6);
 	}
 
 	if (c->ifi4 && c->mtu < IPV4_MIN_MTU) {
@@ -1918,7 +1997,7 @@ void conf(struct ctx *c, int argc, char **argv)
 	if (!c->ifi4 && !v6_only) {
 		if (!c->splice_only) {
 			info("IPv4: no external interface as template, use local mode");
-			conf_ip4_local(&c->ip4);
+			conf_ip4_local(c);
 		}
 		c->ifi4 = -1;
 	}
@@ -1929,7 +2008,7 @@ void conf(struct ctx *c, int argc, char **argv)
 		 * context -- so this block cannot execute in that case. */
 		if (!c->splice_only) {
 			info("IPv6: no external interface as template, use local mode");
-			conf_ip6_local(&c->ip6);
+			conf_ip6_local(c);
 		}
 		c->ifi6 = -1;
 	}
@@ -1972,6 +2051,9 @@ void conf(struct ctx *c, int argc, char **argv)
 	else if (optind != argc)
 		die("Extra non-option argument: %s", argv[optind]);
 
+	if (c->pass_fds && *netns)
+		die("--pass-fds can only be used when spawning a command");
+
 	if (c->no_pidns && *netns)
 		die("--no-pidns is incompatible with PID or --netns");
 
@@ -2003,7 +2085,7 @@ void conf(struct ctx *c, int argc, char **argv)
 	if (!c->ifi6) {
 		c->no_ndp = 1;
 		c->no_dhcpv6 = 1;
-	} else if (IN6_IS_ADDR_UNSPECIFIED(&c->ip6.addr)) {
+	} else if (!fwd_get_addr(c, AF_INET6, true, CONF_ADDR_ANY)) {
 		c->no_dhcpv6 = 1;
 	}
 
@@ -2266,7 +2348,12 @@ void conf_handler(struct ctx *c, uint32_t events)
 				       "    ", "");
 		}
 
-		fwd_listen_switch(c);
+		if (fwd_listen_switch(c) < 0) {
+			err("Error switching to new forwarding rules");
+			/* Switch back to old rules (still in c->fwd_pending) */
+			if (fwd_listen_switch(c) < 0)
+				err("Couldn't restore old forwarding rules");
+		}
 	}
 
 	if (events & EPOLLHUP) {

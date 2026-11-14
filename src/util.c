@@ -1215,24 +1215,13 @@ void make_ugid_map(pid_t pid, uid_t uid, gid_t gid)
 	if (snprintf_check(gidmap, BUFSIZ, "0 %u 1", gid))
 		die_perror("Can't build gidmap");
 
+	/* Keep the required uid_map -> setgroups -> gid_map order.  Attempt all
+	 * writes, even if procfs belongs to a stale/detached PID namespace.  As
+	 * upstream does, warn instead of aborting when mapping files are absent
+	 * or unwritable.  Android prepatched mode never enters this path. */
 	if (write_file(uidmap_path, uidmap))
-		die("Couldn't configure user mappings");
-
-	/* The order matters and is not optional: for an unprivileged caller the
-	 * gid map is only writable after "deny" has been written to setgroups.
-	 * Writing it afterwards made pasta fail with "Couldn't configure user
-	 * mappings" instead of starting, which is the opposite of the intended
-	 * Android tolerance.
-	 *
-	 * That tolerance still applies where the file is absent or refused: Linux
-	 * before 3.19 has no setgroups, and some sandboxes (Android included) deny
-	 * it.  Failure is only acceptable when writing it was not what made the
-	 * gid map writable, so it is attempted first and its error is kept, not
-	 * fatal -- but a gid_map failure after a *successful* setgroups write is
-	 * reported as the mapping error it is.
-	 */
+		warn("Couldn't configure user mappings (uid_map)");
 	(void)write_file(setgroups_path, "deny");
-
 	if (write_file(gidmap_path, gidmap))
-		die("Couldn't configure user mappings");
+		warn("Couldn't configure user mappings (gid_map)");
 }

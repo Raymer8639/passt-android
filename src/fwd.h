@@ -61,7 +61,7 @@ int fwd_listen_sync(const struct ctx *c, uint8_t pif,
 		    const struct fwd_scan *tcp, const struct fwd_scan *udp);
 void fwd_listen_close(const struct fwd_table *fwd);
 int fwd_listen_init(const struct ctx *c);
-void fwd_listen_switch(struct ctx *c);
+int fwd_listen_switch(struct ctx *c);
 
 bool nat_inbound(const struct ctx *c, const union inany_addr *addr,
 		 union inany_addr *translated);
@@ -79,5 +79,9 @@ void fwd_neigh_table_free(const struct ctx *c,
 void fwd_neigh_mac_get(const struct ctx *c, const union inany_addr *addr,
 		       uint8_t *mac);
 void fwd_neigh_table_init(const struct ctx *c);
+void fwd_set_addr(struct ctx *c, const union inany_addr *addr,
+		  uint8_t flags, int prefix_len);
+const struct guest_addr *fwd_get_addr(const struct ctx *c, sa_family_t af,
+				      bool global, uint8_t flags);
 
 #endif /* FWD_H */
