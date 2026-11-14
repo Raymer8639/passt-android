@@ -26,16 +26,25 @@ def run(fd, opt_in, args):
         return 124, ((exc.stdout or b"") + (exc.stderr or b"")).decode(errors="replace")
 
 
-def check(label, fd, opt_in, want_local):
+def check(label, fd, opt_in, want_local, *, allow_client_close=False):
     code, output = run(fd, opt_in, ["-6"])
     assert (MSG in output) == want_local, (label, code, output)
     if want_local:
         assert code not in (0, 124), (label, code, output)
     else:
         assert "Prepatched socket endpoint" not in output, (label, code, output)
-        assert code == 124 or (code > 0 and any(x in output for x in (
-            "Failed to", "Couldn't", "Can't", "Operation not permitted",
-            "Permission denied", "Invalid argument"))), (label, code, output)
+        if code == 0:
+            # An unconnected inherited socket can reach tap_sock_reset(),
+            # where --fd/one_off logs this exact close and exits successfully.
+            # Require completed configuration and restrict this exception to
+            # that descriptor case; the no-local-mode assertions above apply.
+            assert (allow_client_close and
+                    "Inbound forwarding rules (HOST):" in output and
+                    "Client connection closed, exiting" in output), (label, code, output)
+        else:
+            assert code == 124 or (code > 0 and any(x in output for x in (
+                "Failed to", "Couldn't", "Can't", "Operation not permitted",
+                "Permission denied", "Invalid argument"))), (label, code, output)
     print(label, "PASS exit=" + str(code), flush=True)
 
 
@@ -74,7 +83,8 @@ def main():
     finally:
         os.close(r); os.close(w)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        check("unconnected + opt-in", s.fileno(), "1", False)
+        check("unconnected + opt-in", s.fileno(), "1", False,
+              allow_client_close=True)
     check("no fd + opt-in", None, "1", False)
 
 
