@@ -1,7 +1,9 @@
 # passt-android
 
-Android/bionic ARM64 port of passt, maintained from upstream commit `7380393df27ec3ae4aacb40b6f9f25f75a11acf5`
-(snapshot 2026_11_11.7380393).
+**v0.4.0** — Android/bionic ARM64 port of passt, based on official upstream
+commit `7380393df27ec3ae4aacb40b6f9f25f75a11acf5` (2026-11-11 snapshot).
+The complete 20-commit update after `df90211` is included. See the
+[changelog](CHANGELOG.md) and [v0.4.0 release notes](RELEASE-NOTES-v0.4.0.md).
 
 passt runs a guest's TCP/IP stack in userspace, so a guest can reach the
 network with no root, no TAP device and no capabilities. On Android that is the
@@ -17,11 +19,17 @@ no patching step.
 ## Build
 
 ```sh
-NDK=/path/to/android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64 \
-  ./build-android.sh
+env -i PATH=/usr/bin:/bin \
+  NDK=/path/to/android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64 \
+  VERSION=v0.4.0 ./build-android.sh
 ```
 
 The result is `.build/android/passt`: static, Android API 30, aarch64.
+`VERSION=v0.4.0` is passed explicitly to the compiler and embedded in
+`passt --version`. Without `VERSION`, the developer build keeps the upstream
+snapshot label `2026_11_11.7380393-android`; release builds must set it.
+After the release tag is created, build from that checkout with the command
+above and verify the binary version and ELF before uploading it.
 `BUILD_DIR` can select another directory outside `src/`; sources and existing
 binaries under `src/` are left intact. Static bionic is
 intentional -- glibc binaries are rejected by Android seccomp before `main()`
@@ -90,10 +98,9 @@ An Android app process cannot create namespaces. Measured on Termux (Android
 | `clone(CLONE_NEWUSER)` | `EINVAL` |
 | `unshare(CLONE_NEWNS\|CLONE_NEWIPC\|CLONE_NEWUTS)` | `EPERM` |
 
-passt's normal startup depends on all four. But when `--fd` is a socket handed
-over by a parent that already set the interface up (an UML harness, a VMM), none
-of that work is needed or possible. `fd_prepatched()` detects exactly that case
-and skips:
+The Android prepatched mode is an explicit choice by the parent, which must
+provide a connected interface socket and its own isolation policy. With the
+opt-in enabled, `fd_prepatched()` skips:
 
 * the netlink probe, using the caller's explicit configuration instead -- for
   IPv4 *and* IPv6, so neither family needs `NETLINK_ROUTE`;
@@ -150,13 +157,23 @@ For the dataplane, this binary is the passt end of the UML `vec0` bridge in
 DHCP, DNS, ICMP and TCP from the guest's own output; see
 `tools/um-arm64/doc/90-networking.md` in that repository.
 
-Device evidence is archived there too: a full network gate run
-(`docs/evidence/2026-10-17-umnet-network.json`, 9/9 checks) names this binary by
-SHA256, `docs/evidence/faults/` holds the judged link-drop / kernel-kill /
-guest-panic scenarios, and the soak tool repeats the gate under
-`--minutes`/`--rounds` bounds. The host job in CI is what guarantees the
-ordinary passt path has not changed; the device records are what prove the
-Android path ran.
+The source candidate for v0.4.0 was verified on 2026-11-14: complete native
+host builds of passt/pasta, passt-repair and pesto passed with `-Werror`, the
+MSS/FIN regressions and Android configuration/fd/mapping checks passed, and
+NDK r29/API30 produced a static Android aarch64 ELF with no interpreter or
+shared-library dependencies. The bounded host startup probes covered 13 cases.
+
+On Termux, the same source candidate passed IPv4 **10/10** and full IPv6
+**15/15** gates with kernel 7.2-rc4, a matching stub/umnet and an isolated
+Alpine 3.21.3 root. DNS-disabled checks also passed with only the unscored DNS
+and TCP workload omitted by a scratch wrapper; the gate scoring stayed intact.
+These results belong to the tested snapshot candidate. The final tagged release
+asset is rebuilt separately with `VERSION=v0.4.0`; its version and ELF must be
+checked again. Historical fault/soak records are not new v0.4.0 test runs.
+
+The host startup probes check path selection and explicit configuration; they
+do not assert the process credentials or namespace state. See the release notes
+for the tested candidate identity and the prepatched-mode limitations.
 
 ## Upstream
 
