@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.4.1 — 2026-11-15
+
+### Inherited-socket mode is validated once, before isolation
+
+- Replace the ad-hoc predicate with `conf_prepatched()`: after all command-line
+  parsing, it decides the mode **once** and stores it in `ctx`. Configuration,
+  user isolation, prefork isolation and the neighbour-notification path all read
+  that one committed flag (`fd_prepatched()`), so the halves can never disagree.
+- The contract is now explicit and narrow: `MODE_PASST` without `--splice-only`,
+  `PASST_ANDROID_NO_ISOLATION=1|yes`, an `--fd` that is a *connected* `AF_UNIX`
+  `SOCK_STREAM` socket, and an existing non-root non-setid identity
+  (`ruid==euid==suid`, `rgid==egid==sgid`, all non-zero). Anything else is
+  refused with a message that names the requirement, instead of silently
+  shortening the isolation path.
+- `--runas` is refused in this mode rather than ignored: the contract keeps the
+  caller's credentials, so an override could not be honoured.
+- A legal Android app keeps its own UID/GID and supplementary groups (no
+  `setgroups()`/setuid, which Android denies) and still runs the capability
+  clamp, dumpable/no-new-privs fallback and seccomp steps. The explicit
+  delegation is not evidence that a parent sandbox exists; the documentation
+  keeps saying so.
+
+### Validation
+
+- `src/test/prepatched-contract.py` — 29-case matrix over the production
+  functions: legal socketpair accepted; pipe, unconnected AF_UNIX, `SOCK_DGRAM`,
+  connected `AF_INET`, missing fd, `MODE_PASTA`, `MODE_VU`, `--splice-only`,
+  `--runas` (including a no-op one) and every root/setid credential shape
+  refused.
+- Host binaries build with `-Werror`; `check-tcp`, `check-android` and the new
+  `check-prepatched` target pass in CI.
+- NDK r29 / API 30 static Android build: AArch64, no interpreter, no dynamic
+  section, every LOAD segment 16 KiB aligned.
+- On an untraced Termux host (uid 10373): `strace` shows **no**
+  `setgroups/setuid/setgid/setres*` calls, while `PR_CAPBSET_DROP`, `capset`,
+  `PR_SET_DUMPABLE`, `PR_SET_NO_NEW_PRIVS` and `PR_SET_SECCOMP` still run.
+  Without the opt-in the same binary still takes the full `isolate_user()` path.
+- Boundaries: the root/setid refusals are exercised through a controlled
+  credential seam, not on a real root host; the glibc host binary cannot start
+  inside the development container because `/proc/self/uid_map` is hidden there
+  (the v0.4.0 baseline fails identically).
+
 ## v0.4.0 — 2026-11-14
 
 ### Upstream update
