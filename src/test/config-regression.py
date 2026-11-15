@@ -48,6 +48,13 @@ def check(label, fd, opt_in, want_local, *, allow_client_close=False):
     print(label, "PASS exit=" + str(code), flush=True)
 
 
+def refuse(label, fd, message):
+    code, output = run(fd, "1", ["-6"])
+    assert code > 0 and code != 124 and message in output, (label, code, output)
+    assert MSG not in output and "skipping namespace isolation" not in output, output
+    print(label, "PASS contract refused", flush=True)
+
+
 def main():
     a, b = socket.socketpair()
     try:
@@ -79,13 +86,16 @@ def main():
         a.close(); b.close()
     r, w = os.pipe()
     try:
-        check("pipe + opt-in", r, "1", False)
+        refuse("pipe + opt-in", r, "Prepatched mode requires --fd")
+        check("pipe without opt-in", r, None, False)
     finally:
         os.close(r); os.close(w)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        check("unconnected + opt-in", s.fileno(), "1", False,
+        refuse("unconnected + opt-in", s.fileno(), "Prepatched mode requires a connected AF_UNIX")
+        check("unconnected without opt-in", s.fileno(), None, False,
               allow_client_close=True)
-    check("no fd + opt-in", None, "1", False)
+    refuse("no fd + opt-in", None, "Prepatched mode requires --fd")
+    check("no fd without opt-in", None, None, False)
 
 
 if __name__ == "__main__":

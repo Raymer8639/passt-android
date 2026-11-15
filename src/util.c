@@ -1119,67 +1119,60 @@ long clamped_scale(long x, long y, long lo, long hi, long f)
 }
 
 /**
- * fd_prepatched() - Is the interface descriptor an inherited socket?
- * @c:		Execution context
+ * conf_prepatched() - Validate and commit explicit inherited-interface mode
+ * @c:          Execution context, with all command-line mode options parsed
+ * @runas:      --runas argument, NULL if absent (even a no-op override is refused)
  *
- * A parent that set up our interface for us (a VMM, an UML harness, a
- * sandboxed app) hands it over as one end of a socketpair.  Such a
- * descriptor has no filesystem path and needs no host interface, which is
- * the only configuration in which passt can run with no capability and no
- * namespace of its own.
+ * A connected fd is not evidence of a parent sandbox.  This contract only
+ * permits an existing non-root identity with its inherited supplementary groups.
+ * Validation happens once, before discovery or credentials change; every later
+ * configuration/isolation decision reads the same committed context flag.
+ */
+void conf_prepatched(struct ctx *c, const char *runas)
+{
+	const char *opt = getenv("PASST_ANDROID_NO_ISOLATION");
+	struct sockaddr_storage peer;
+	socklen_t len = sizeof(peer);
+	uid_t ruid, euid, suid;
+	gid_t rgid, egid, sgid;
+	int type;
+	struct stat st;
+
+	c->prepatched = false;
+	if (!opt || (strcmp(opt, "1") && strcmp(opt, "yes")))
+		return;
+
+	if (c->mode != MODE_PASST || c->splice_only)
+		die("Prepatched mode requires MODE_PASST without --splice-only");
+	if (runas)
+		die("Prepatched mode does not support --runas");
+	if (getresuid(&ruid, &euid, &suid) || getresgid(&rgid, &egid, &sgid))
+		die_perror("Prepatched mode cannot determine credentials");
+	if (!ruid || !euid || !suid || ruid != euid || ruid != suid ||
+	    !rgid || !egid || !sgid || rgid != egid || rgid != sgid)
+		die("Prepatched mode requires a non-root, non-setid UID and GID");
+	if (c->fd_tap < 0 || fstat(c->fd_tap, &st) || !S_ISSOCK(st.st_mode))
+		die("Prepatched mode requires --fd with a connected AF_UNIX SOCK_STREAM socket");
+	if (getpeername(c->fd_tap, (struct sockaddr *)&peer, &len) ||
+	    peer.ss_family != AF_UNIX)
+		die("Prepatched mode requires a connected AF_UNIX socket");
+	len = sizeof(type);
+	if (getsockopt(c->fd_tap, SOL_SOCKET, SO_TYPE, &type, &len) ||
+	    len != sizeof(type) || type != SOCK_STREAM)
+		die("Prepatched mode requires SOCK_STREAM framing");
+
+	c->prepatched = true;
+}
+
+/**
+ * fd_prepatched() - Read the validated inherited-interface contract
+ * @c:          Execution context
  *
- * Return: true if the descriptor is an unnamed socket, false otherwise
+ * Return: the single decision committed by conf_prepatched(), false by default
  */
 bool fd_prepatched(const struct ctx *c)
 {
-	static int allowed = -1;
-	struct stat st;
-	struct sockaddr_storage peer;
-	socklen_t peerlen = sizeof(peer);
-
-	if (c->fd_tap < 0)
-		return false;
-
-	/*
-	 * Skipping isolation is only safe for a socket endpoint handed over by a
-	 * parent that already owns the sandbox.  It is also the only thing that
-	 * works on Android, which denies the namespaces and setgroups calls the
-	 * isolation steps make.
-	 *
-	 * It must not happen by accident in a normal build: `--fd` is an ordinary
-	 * upstream option, and a root process given a socket there is expected to
-	 * drop to nobody and pivot_root like any other passt.  The parent opts in
-	 * explicitly, so a caller that does not ask keeps upstream behaviour.
-	 */
-	if (allowed < 0) {
-		const char *opt = getenv("PASST_ANDROID_NO_ISOLATION");
-
-		allowed = opt && (!strcmp(opt, "1") || !strcmp(opt, "yes"));
-	}
-	if (!allowed)
-		return false;
-
-	if (fstat(c->fd_tap, &st))
-		return false;
-
-	if (!S_ISSOCK(st.st_mode))
-		return false;
-
-	/*
-	 * The descriptor must be a *connected* socket.  Without this a listening
-	 * or unconnected fd looks prepatched, the isolation is skipped, and the
-	 * failure only appears later in the event loop with a message that names
-	 * neither the option nor the cause.
-	 *
-	 * getpeername() is the test, not SO_ERROR: SO_ERROR reads 0 for a
-	 * connected, an unconnected, a listening and a datagram AF_UNIX socket
-	 * alike, so it cannot tell them apart.  An unconnected or listening
-	 * socket has no peer and getpeername() fails with ENOTCONN.
-	 */
-	if (getpeername(c->fd_tap, (struct sockaddr *)&peer, &peerlen))
-		return false;
-
-	return true;
+	return c->prepatched;
 }
 
 /**

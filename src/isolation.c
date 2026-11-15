@@ -397,13 +397,10 @@ void isolate_user(const struct ctx *c, uid_t uid, gid_t gid, bool use_userns,
 {
 	uint64_t ns_caps = 0;
 
-	/* A prepatched AF_UNIX endpoint is only ever handed to us by a parent
-	 * that already owns the isolation: there is no host interface to
-	 * discover, no routing to set up, and no capability we could use.
-	 * Android in particular denies both setgroups(2) and user namespace
-	 * creation outright, so the whole user/namespace dance is both
-	 * unnecessary and impossible there.
-	 */
+	/* conf_prepatched() accepted an existing non-root, non-setid identity
+	 * and refused --runas.  Keep its UID/GID and supplementary groups: Android
+	 * forbids setgroups(), and app groups may grant required socket access.
+	 * This explicit delegation does not prove a parent sandbox exists. */
 	if (fd_prepatched(c)) {
 		debug("Prepatched socket endpoint: skipping user namespace setup");
 		return;
@@ -504,12 +501,9 @@ int isolate_prefork(const struct ctx *c)
 	int flags = CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWUTS;
 	uint64_t ns_caps = 0;
 
-	/* An inherited socket endpoint means the caller owns the interface and
-	 * our lifetime, and the host may not let us create namespaces at all
-	 * (Android denies CLONE_NEWNS to app processes).  Our own mount and
-	 * IPC namespaces buy nothing here: the descriptor is already open and
-	 * we never touch the filesystem again after startup.
-	 */
+	/* Only the validated, explicit non-root AF_UNIX stream contract delegates
+	 * namespaces/filesystem isolation.  Keep the capability clamp below and
+	 * all dump/no_new_privs/seccomp steps in isolate_postfork(). */
 	if (fd_prepatched(c)) {
 		debug("Prepatched socket endpoint: skipping namespace isolation");
 		goto caps;

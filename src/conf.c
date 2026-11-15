@@ -1914,6 +1914,7 @@ void conf(struct ctx *c, int argc, char **argv)
 	if (!ifi6 && *c->ip6.ifname_out)
 		ifi6 = if_nametoindex(c->ip6.ifname_out);
 
+	conf_prepatched(c, runas);
 	conf_ugid(runas, &uid, &gid);
 
 	if (logfile)
@@ -1943,8 +1944,9 @@ void conf(struct ctx *c, int argc, char **argv)
 	 * such a caller local-mode configuration while isolation still ran:
 	 * half of the prepatched behaviour, and a failure that names neither
 	 * the option nor the cause. */
-	fd_local_mode = c->mode == MODE_PASST && fd_prepatched(c) &&
-			!c->splice_only;
+	fd_local_mode = fd_prepatched(c);
+	if (fd_local_mode)
+		info("Prepatched mode: retaining caller credentials and filesystem; parent must provide isolation");
 	if (!fd_local_mode)
 		nl_sock_init(c, false);
 	if (fd_local_mode) {
@@ -2059,8 +2061,7 @@ void conf(struct ctx *c, int argc, char **argv)
 
 	conf_open_files(c);	/* Before any possible setuid() / setgid() */
 
-	if (!fd_prepatched(c))
-		isolate_user(c, uid, gid, !netns_only, userns);
+	isolate_user(c, uid, gid, !netns_only, userns);
 
 	if (c->no_icmp)
 		c->no_ndp = 1;

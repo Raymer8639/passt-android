@@ -66,6 +66,7 @@ int main(int argc, char **argv)
         assert(fcntl(extra, F_GETFD) == -1 && errno == EBADF);
     }
     assert(setenv("PASST_ANDROID_NO_ISOLATION", "1", 1) == 0);
+    conf_prepatched(&c, NULL);
     assert(fd_prepatched(&c));
     return 0;
 }
