@@ -123,12 +123,15 @@ valgrind: BASE_CPPFLAGS += -DVALGRIND
 valgrind: BASE_CFLAGS += -g
 valgrind: all
 
-.PHONY: check-tcp check-android
+.PHONY: check-tcp check-android check-prepatched
 check-tcp:
 	CC="$(CC)" python3 test/tcp-regression.py
 
 check-android:
 	CC="$(CC)" python3 test/android-regression.py
+
+check-prepatched:
+	python3 test/prepatched-contract.py
 
 .PHONY: clean
 clean:

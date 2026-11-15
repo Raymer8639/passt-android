@@ -91,7 +91,7 @@ jobs:
           env -i PATH=/usr/bin:/bin make -C .build/host passt passt-repair pesto pasta CC=gcc CFLAGS=-Werror LDFLAGS=
 
       - name: TCP small-MSS and FIN duplicate-ACK regressions
-        run: env -i PATH=/usr/bin:/bin make -C src check-tcp check-android CC=gcc
+        run: env -i PATH=/usr/bin:/bin make -C src check-tcp check-android check-prepatched CC=gcc
 
       - name: Check host version and bounded configuration regressions
         run: |
