@@ -192,6 +192,7 @@ struct ip6_ctx {
  * @netns_dir:		Directory of fs-bound namespace, if any, in pasta mode
  * @epollfd:		File descriptor for epoll instance
  * @fd_tap_listen:	File descriptor for listening AF_UNIX socket, if any
+ * @prepatched:		Validated non-root inherited AF_UNIX stream contract
  * @fd_tap:		AF_UNIX socket, tuntap device, or pre-opened socket
  * @fd_control_listen:	Listening control/configuration socket, if any
  * @fd_control:		Control/configuration socket, if any
@@ -272,6 +273,7 @@ struct ctx {
 
 	int epollfd;
 	int fd_tap_listen;
+	bool prepatched;
 	int fd_tap;
 	int fd_control_listen;
 	int fd_control;

@@ -291,6 +291,7 @@ static inline int wrap_getsockname(int sockfd, struct sockaddr *addr,
 void encode_domain_name(char *buf, const char *domain_name);
 
 void make_ugid_map(pid_t pid, uid_t uid, gid_t gid);
+void conf_prepatched(struct ctx *c, const char *runas);
 bool fd_prepatched(const struct ctx *c);
 
 #endif /* UTIL_H */
